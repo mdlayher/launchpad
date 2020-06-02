@@ -54,10 +54,16 @@ var ErrDevice = errors.New("device is not a launchpad")
 
 // A Device is a Novation Launchpad MIDI device.
 type Device struct {
+	// Ensures interruptListener goroutines stop.
+	wg sync.WaitGroup
+
+	// Guards the Device's I/O methods.
 	mu  sync.Mutex
 	in  midi.In
 	out midi.Out
-	wg  sync.WaitGroup
+
+	// Guards against sending on Events channel after it is closed.
+	eventsMu sync.Mutex
 }
 
 // Devices detects and opens handles to all Launchpad devices attached
@@ -255,12 +261,10 @@ func (d *Device) onEvent(ctx context.Context, eventC chan<- Event) func([]byte, 
 			return
 		}
 
-		// TODO: acquire lock to prevent a possible send on closed channel if
-		// ctx is canceled while this callback is in-flight.
-		/*
-			d.mu.Lock()
-			defer d.mu.Unlock()
-		*/
+		// Acquire the events lock to prevent a possible send on closed channel
+		// if ctx is canceled while this callback is in-flight.
+		d.eventsMu.Lock()
+		defer d.eventsMu.Unlock()
 
 		// Either cancel or forward on the Event to the caller.
 		select {
@@ -289,6 +293,10 @@ func (d *Device) interruptListener(ctx context.Context, eventC chan<- Event) {
 
 		// Events will set eventC but Listen passes a nil channel.
 		if eventC != nil {
+			// Avoid a possible send on closed channel.
+			d.eventsMu.Lock()
+			defer d.eventsMu.Unlock()
+
 			close(eventC)
 		}
 	}()
