@@ -193,15 +193,13 @@ func (d *Device) Listen(ctx context.Context, fn func(b []byte, timestamp int64))
 	// for events and close the channel to signal the consumer.
 	d.wg.Add(1)
 	go func() {
-		defer func() {
-			d.mu.Unlock()
-			d.wg.Done()
-		}()
+		defer d.wg.Done()
 
 		<-ctx.Done()
 
 		// Now that the context is canceled, clean up the listener.
 		d.mu.Lock()
+		defer d.mu.Unlock()
 		_ = d.in.StopListening()
 	}()
 
