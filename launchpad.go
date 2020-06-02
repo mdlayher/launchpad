@@ -188,21 +188,9 @@ func (d *Device) Listen(ctx context.Context, fn func(b []byte, timestamp int64))
 		return fmt.Errorf("failed to listen for inputs: %w", err)
 	}
 
-	// Now that the callback has been applied, we return control to the
-	// caller and wait for ctx to be canceled. At that point, we stop listening
-	// for events and close the channel to signal the consumer.
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-
-		<-ctx.Done()
-
-		// Now that the context is canceled, clean up the listener.
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		_ = d.in.StopListening()
-	}()
-
+	// Handle cancelation, do not set a channel of Events that needs to be
+	// closed later.
+	d.interruptListener(ctx, nil)
 	return nil
 }
 
@@ -267,25 +255,33 @@ func (d *Device) Events(ctx context.Context) (<-chan Event, error) {
 		return nil, fmt.Errorf("failed to listen for inputs: %w", err)
 	}
 
-	// Now that the callback has been applied, we return the channel to the
-	// caller and wait for ctx to be canceled. At that point, we stop listening
-	// for events and close the channel to signal the consumer.
+	// Handle cancelation and pass eventC so that it will be closed when ctx is
+	// canceled.
+	d.interruptListener(ctx, eventC)
+	return eventC, nil
+}
+
+// interruptListener interrupts an input Listener when ctx is canceled. If
+// eventC is not nil, it is closed after interruption.
+//
+// interruptListener will not block the caller.
+func (d *Device) interruptListener(ctx context.Context, eventC chan<- Event) {
 	d.wg.Add(1)
 	go func() {
-		defer func() {
-			d.mu.Unlock()
-			d.wg.Done()
-		}()
+		defer d.wg.Done()
 
 		<-ctx.Done()
 
 		// Now that the context is canceled, clean up the listener.
 		d.mu.Lock()
+		defer d.mu.Unlock()
 		_ = d.in.StopListening()
-		close(eventC)
-	}()
 
-	return eventC, nil
+		// Events will set eventC but Listen passes a nil channel.
+		if eventC != nil {
+			close(eventC)
+		}
+	}()
 }
 
 // Light lights the LED at coordinates (X, Y) with the specified Color. Off may
