@@ -211,8 +211,20 @@ func (d *Device) Events(ctx context.Context) (<-chan Event, error) {
 	// Buffer up events to try to avoid dropping them. This should be a
 	// sufficient number for how quickly a human can manipulate buttons.
 	eventC := make(chan Event, 32)
+	if err := d.in.SetListener(d.onEvent(ctx, eventC)); err != nil {
+		return nil, fmt.Errorf("failed to listen for inputs: %w", err)
+	}
 
-	fn := func(b []byte, delta int64) {
+	// Handle cancelation and pass eventC so that it will be closed when ctx is
+	// canceled.
+	d.interruptListener(ctx, eventC)
+	return eventC, nil
+}
+
+// onEvent produces a callback for midi.In.SetListen which closes over an
+// Event channel and context for cancelation.
+func (d *Device) onEvent(ctx context.Context, eventC chan<- Event) func([]byte, int64) {
+	return func(b []byte, _ int64) {
 		// Assume 3 byte messages per the Programmer's Reference.
 		if len(b) != 3 {
 			return
@@ -243,6 +255,13 @@ func (d *Device) Events(ctx context.Context) (<-chan Event, error) {
 			return
 		}
 
+		// TODO: acquire lock to prevent a possible send on closed channel if
+		// ctx is canceled while this callback is in-flight.
+		/*
+			d.mu.Lock()
+			defer d.mu.Unlock()
+		*/
+
 		// Either cancel or forward on the Event to the caller.
 		select {
 		case <-ctx.Done():
@@ -250,15 +269,6 @@ func (d *Device) Events(ctx context.Context) (<-chan Event, error) {
 		case eventC <- e:
 		}
 	}
-
-	if err := d.in.SetListener(fn); err != nil {
-		return nil, fmt.Errorf("failed to listen for inputs: %w", err)
-	}
-
-	// Handle cancelation and pass eventC so that it will be closed when ctx is
-	// canceled.
-	d.interruptListener(ctx, eventC)
-	return eventC, nil
 }
 
 // interruptListener interrupts an input Listener when ctx is canceled. If
